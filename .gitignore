@@ -31,3 +31,8 @@ dist-ssr
 *.sw?
 
 .python-version
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
