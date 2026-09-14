@@ -112,6 +112,17 @@ class TradingEvalCallback(BaseCallback):
             "exposure": float(np.mean(exposures)),
         }
 
+    @staticmethod
+    def _box(rows) -> list:
+        key_w, val_w = 30, 9
+        border = "-" * (key_w + val_w + 7)
+        lines = [border]
+        for key, value in rows:
+            value = "" if value is None else value
+            lines.append(f"| {key:<{key_w}} | {value:>{val_w}} |")
+        lines.append(border)
+        return lines
+
     def _panel_lines(self) -> list:
         v = self.model.logger.name_to_value
 
@@ -129,32 +140,39 @@ class TradingEvalCallback(BaseCallback):
             ep_rew = f"{np.mean([ep['r'] for ep in buf]):.4f}"
             ep_len = f"{np.mean([ep['l'] for ep in buf]):.1f}"
 
-        lines = [
-            f"PPO | steps {self.num_timesteps}/{self.model._total_timesteps} | "
-            f"iter {iteration} | fps {fps} | elapsed {int(elapsed)}s",
-            f"rollout | ep_rew_mean {ep_rew} | ep_len_mean {ep_len}",
-            f"train   | loss {fmt('train/loss', '.4f')} | "
-            f"pg_loss {fmt('train/policy_gradient_loss', '.4f')} | "
-            f"vf_loss {fmt('train/value_loss', '.4f')} | "
-            f"entropy {fmt('train/entropy_loss', '.4f')}",
-            f"        | approx_kl {fmt('train/approx_kl', '.4f')} | "
-            f"clip_frac {fmt('train/clip_fraction', '.3f')} | "
-            f"expl_var {fmt('train/explained_variance', '.3f')} | "
-            f"lr {fmt('train/learning_rate', '.4f')} | "
-            f"n_updates {fmt('train/n_updates', '.0f')}",
+        rows = [
+            ("time/", None),
+            ("   fps", str(fps)),
+            ("   iterations", str(iteration)),
+            ("   time_elapsed", str(int(elapsed))),
+            ("   total_timesteps", str(self.num_timesteps)),
+            ("rollout/", None),
+            ("   ep_rew_mean", ep_rew),
+            ("   ep_len_mean", ep_len),
+            ("train/", None),
+            ("   approx_kl", fmt("train/approx_kl", ".4f")),
+            ("   clip_fraction", fmt("train/clip_fraction", ".3f")),
+            ("   entropy_loss", fmt("train/entropy_loss", ".4f")),
+            ("   explained_variance", fmt("train/explained_variance", ".3f")),
+            ("   learning_rate", fmt("train/learning_rate", ".4f")),
+            ("   loss", fmt("train/loss", ".4f")),
+            ("   n_updates", fmt("train/n_updates", ".0f")),
+            ("   policy_gradient_loss", fmt("train/policy_gradient_loss", ".4f")),
+            ("   value_loss", fmt("train/value_loss", ".4f")),
+            ("eval/", None),
         ]
 
         m = self._last_eval_metrics
         if m is None:
-            lines.append(f"eval    | (pending, every {self.eval_freq} steps)")
+            for label in ("return", "sharpe", "sortino", "max_drawdown", "turnover"):
+                rows.append((f"   {label}", "n/a"))
         else:
-            lines.append(
-                f"eval    | @{self._last_eval} ret {m['return']:.2%} | "
-                f"sharpe {m['sharpe']:.2f} | sortino {m['sortino']:.2f} | "
-                f"vol {m['vol']:.2%} | maxDD {m['max_drawdown']:.2%} | "
-                f"turn {m['turnover']:.2%} | exp {m['exposure']:.2%}"
-            )
-        return lines
+            rows.append(("   return", f"{m['return']:.2%}"))
+            rows.append(("   sharpe", f"{m['sharpe']:.2f}"))
+            rows.append(("   sortino", f"{m['sortino']:.2f}"))
+            rows.append(("   max_drawdown", f"{m['max_drawdown']:.2%}"))
+            rows.append(("   turnover", f"{m['turnover']:.2%}"))
+        return self._box(rows)
 
     def _render(self, force: bool = False):
         if not self._live:
