@@ -71,6 +71,11 @@ def walk_forward(
 
     engine = BacktesterEngine(df, signals, **engine_kwargs)
     portfolio = engine.run_backtest()
-    bench_returns = df["Close"].pct_change().fillna(0.0)
-    metrics = calculate_performance_metrics(portfolio, benchmark_returns=bench_returns)
-    return portfolio, metrics
+
+    # Evaluate only the out-of-sample period; the pre-test window is flat (no
+    # positions) and should not pollute the performance metrics.
+    oos_start = split_points[0]
+    oos_portfolio = portfolio.iloc[oos_start:]
+    bench_returns = df["Close"].pct_change().fillna(0.0).iloc[oos_start:]
+    metrics = calculate_performance_metrics(oos_portfolio, benchmark_returns=bench_returns)
+    return oos_portfolio, metrics
