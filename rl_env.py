@@ -143,4 +143,5 @@ class TradingEnv(gym.Env):
         gross = float(target * self.returns[self._day])
         net = gross - cost - self.turnover_penalty * turnover
         reward = self._shaped_reward(net)
-        return self._get_obs(), reward, False, False, {}
+        info = {"net_return": net, "turnover": turnover}
+        return self._get_obs(), reward, False, False, info
