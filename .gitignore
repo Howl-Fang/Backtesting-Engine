@@ -36,3 +36,6 @@ dist-ssr
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# RL model artifacts
+*.zip
