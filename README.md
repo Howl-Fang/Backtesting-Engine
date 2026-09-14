@@ -9,6 +9,7 @@
 - **回测引擎**：逐 bar 模拟现金与持仓，支持做空，建模手续费、最低佣金、滑点、印花税（卖出侧）、融券利息
 - **绩效指标**：年化收益、波动、Sharpe、Sortino、最大回撤、Calmar、胜率、换手率、市场暴露度，以及相对基准的 Alpha/Beta
 - **样本外验证**：滚动 walk-forward 回测，防止过拟合
+- **强化学习**：PPO 交易智能体，支持注意力策略网络、连续仓位、换手惩罚与差分 Sharpe 奖励
 
 ## 项目结构
 
@@ -19,7 +20,10 @@
 ├── Engine.py        # 逐 bar 回测引擎（交易成本建模）
 ├── metrics.py       # 绩效指标 + 基准对比
 ├── backtest.py      # 策略对比与 walk-forward 验证
-└── main.py          # 示例入口
+├── main.py          # 示例入口
+├── rl_env.py        # Gymnasium 交易环境（强化学习）
+├── rl_policy.py     # 注意力策略网络（自定义 features extractor）
+└── train_rl.py      # PPO 训练与样本外回测脚本
 ```
 
 ## 快速开始
@@ -66,6 +70,24 @@ print(metrics)
 | LightGBM（样本外 walk-forward） | -73.51% | -18.71% | -1.25 | 74.11% | 82.52% |
 
 说明：上证指数该区间本身年化仅 ~1%，各朴素策略均未跑赢买入持有；LightGBM 因换手过高（每日翻仓）被交易成本侵蚀，毛收益实为 +7%。后续优化重点是降换手。
+
+## 强化学习
+
+训练一个 PPO 智能体，在训练集上学习、在样本外数据上回测：
+
+```bash
+uv run python train_rl.py \
+  --timesteps 500000 \
+  --train-end 2019-12-31 \
+  --action-type continuous \
+  --reward-mode differential_sharpe \
+  --turnover-penalty 1e-3
+```
+
+- 观测：最近 `--window` 天技术特征的窗口 + 当前仓位，经注意力网络编码
+- 动作：`discrete`（满仓多/空/平）或 `continuous`（连续仓位 `[-1, 1]`）
+- 奖励：`return`（逐日净收益）/ `log_return` / `differential_sharpe`（差分 Sharpe，直接优化风险调整收益），并可选叠加换手惩罚
+- 模型保存为 `ppo_trading.zip`（已 gitignore）
 
 ## 已知限制
 
