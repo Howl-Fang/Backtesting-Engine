@@ -1,8 +1,9 @@
 """Train a PPO trading agent and backtest the learned policy out-of-sample.
 
-Training logs are saved to `--log-dir` (full SB3 metrics in progress.csv /
-log.txt, periodic evaluations in eval.log). The console shows a live status
-line (overwritten in place) with periodic Sharpe-style metrics.
+The console shows a live, in-place panel of detailed training metrics (loss,
+KL, entropy, explained variance, ...) refreshed a few times per second, plus an
+occasional Sharpe-style evaluation. Full logs are written to `--log-dir`
+(SB3 metrics in progress.csv / log.txt, evaluations in eval.log).
 
 Example:
     python train_rl.py --timesteps 500000 --train-end 2019-12-31
@@ -10,6 +11,8 @@ Example:
 
 import argparse
 import os
+import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -28,26 +31,47 @@ RISK_FREE = 0.02
 
 
 class TradingEvalCallback(BaseCallback):
-    """Periodically evaluate the policy and log metrics + a live status line."""
+    """Live training panel + periodic out-of-sample evaluation.
 
-    def __init__(self, eval_env, eval_freq: int = 20480, log_path: str = "logs/eval.log"):
+    The panel overwrites itself in place (ANSI cursor movement) instead of
+    scrolling. Evaluations run every `eval_freq` timesteps and are written to
+    `log_path`; the latest evaluation is also shown in the panel.
+    """
+
+    def __init__(
+        self,
+        eval_env,
+        eval_freq: int = 40960,
+        log_path: str = "logs/eval.log",
+        refresh_sec: float = 0.5,
+    ):
         super().__init__(verbose=0)
         self.eval_env = eval_env
         self.eval_freq = eval_freq
         self.log_path = log_path
+        self.refresh_sec = refresh_sec
+
         self._last_eval = 0
+        self._last_render = 0.0
+        self._panel_height = 0
+        self._last_eval_metrics = None
+        self._start_time = None
+        self._live = sys.stdout.isatty() or bool(os.environ.get("RL_FORCE_LIVE"))
 
     def _on_training_start(self):
-        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.log_path) or ".", exist_ok=True)
         self._fh = open(self.log_path, "w")
         self._fh.write(
             "timesteps\treturn\tsharpe\tsortino\tvol\tmax_drawdown\tturnover\texposure\n"
         )
         self._fh.flush()
+        self._start_time = time.time()
 
     def _on_training_end(self):
         self._fh.close()
-        print()  # end the live status line
+        if self._live:
+            self._render(force=True)
+            print()
 
     def _evaluate(self):
         obs, _ = self.eval_env.reset()
@@ -88,26 +112,85 @@ class TradingEvalCallback(BaseCallback):
             "exposure": float(np.mean(exposures)),
         }
 
+    def _panel_lines(self) -> list:
+        v = self.model.logger.name_to_value
+
+        def fmt(key, spec, default="n/a"):
+            value = v.get(key)
+            return format(value, spec) if value is not None else default
+
+        elapsed = max(time.time() - self._start_time, 1e-6)
+        fps = int(self.num_timesteps / elapsed)
+        iteration = self.num_timesteps // max(self.model.n_steps, 1)
+
+        ep_rew, ep_len = "n/a", "n/a"
+        buf = self.model.ep_info_buffer
+        if buf:
+            ep_rew = f"{np.mean([ep['r'] for ep in buf]):.4f}"
+            ep_len = f"{np.mean([ep['l'] for ep in buf]):.1f}"
+
+        lines = [
+            f"PPO | steps {self.num_timesteps}/{self.model._total_timesteps} | "
+            f"iter {iteration} | fps {fps} | elapsed {int(elapsed)}s",
+            f"rollout | ep_rew_mean {ep_rew} | ep_len_mean {ep_len}",
+            f"train   | loss {fmt('train/loss', '.4f')} | "
+            f"pg_loss {fmt('train/policy_gradient_loss', '.4f')} | "
+            f"vf_loss {fmt('train/value_loss', '.4f')} | "
+            f"entropy {fmt('train/entropy_loss', '.4f')}",
+            f"        | approx_kl {fmt('train/approx_kl', '.4f')} | "
+            f"clip_frac {fmt('train/clip_fraction', '.3f')} | "
+            f"expl_var {fmt('train/explained_variance', '.3f')} | "
+            f"lr {fmt('train/learning_rate', '.4f')} | "
+            f"n_updates {fmt('train/n_updates', '.0f')}",
+        ]
+
+        m = self._last_eval_metrics
+        if m is None:
+            lines.append(f"eval    | (pending, every {self.eval_freq} steps)")
+        else:
+            lines.append(
+                f"eval    | @{self._last_eval} ret {m['return']:.2%} | "
+                f"sharpe {m['sharpe']:.2f} | sortino {m['sortino']:.2f} | "
+                f"vol {m['vol']:.2%} | maxDD {m['max_drawdown']:.2%} | "
+                f"turn {m['turnover']:.2%} | exp {m['exposure']:.2%}"
+            )
+        return lines
+
+    def _render(self, force: bool = False):
+        if not self._live:
+            return
+        now = time.time()
+        if not force and now - self._last_render < self.refresh_sec:
+            return
+        self._last_render = now
+
+        lines = self._panel_lines()
+        if self._panel_height:
+            sys.stdout.write(f"\033[{self._panel_height}A")
+        for line in lines:
+            sys.stdout.write("\033[K" + line + "\n")
+        self._panel_height = len(lines)
+        sys.stdout.flush()
+
     def _on_step(self):
         if self.num_timesteps - self._last_eval >= self.eval_freq:
             self._last_eval = self.num_timesteps
             m = self._evaluate()
-
+            self._last_eval_metrics = m
             self._fh.write(
                 f"{self.num_timesteps}\t{m['return']:.4f}\t{m['sharpe']:.3f}\t"
                 f"{m['sortino']:.3f}\t{m['vol']:.4f}\t{m['max_drawdown']:.4f}\t"
                 f"{m['turnover']:.4f}\t{m['exposure']:.4f}\n"
             )
             self._fh.flush()
-
-            line = (
-                f"\r[steps {self.num_timesteps:>8d}] "
-                f"ret {m['return']:>8.2%} | sharpe {m['sharpe']:>6.2f} | "
-                f"sortino {m['sortino']:>6.2f} | vol {m['vol']:>6.2%} | "
-                f"maxDD {m['max_drawdown']:>7.2%} | turn {m['turnover']:>6.2%} | "
-                f"exp {m['exposure']:>6.2%}    "
-            )
-            print(line, end="", flush=True)
+            if not self._live:
+                print(
+                    f"[eval @ {self.num_timesteps}] ret {m['return']:.2%} | "
+                    f"sharpe {m['sharpe']:.2f} | sortino {m['sortino']:.2f} | "
+                    f"vol {m['vol']:.2%} | maxDD {m['max_drawdown']:.2%} | "
+                    f"turn {m['turnover']:.2%} | exp {m['exposure']:.2%}"
+                )
+        self._render()
         return True
 
 
@@ -154,7 +237,7 @@ def main():
     parser.add_argument("--d-model", type=int, default=64)
     parser.add_argument("--nhead", type=int, default=4)
     parser.add_argument("--features-dim", type=int, default=128)
-    parser.add_argument("--eval-freq", type=int, default=20480, help="evaluate every N timesteps")
+    parser.add_argument("--eval-freq", type=int, default=40960, help="evaluate every N timesteps")
     parser.add_argument("--log-dir", default="logs")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -188,7 +271,7 @@ def main():
         policy_kwargs=policy_kwargs,
     )
 
-    # Save full training metrics (loss/kl/entropy/...) to --log-dir.
+    # Full training metrics (loss/kl/entropy/...) are saved to --log-dir.
     model.set_logger(configure(args.log_dir, ["csv", "log"]))
 
     eval_env = build_env(test_df, args)
